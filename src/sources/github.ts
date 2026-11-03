@@ -20,7 +20,13 @@ export { commentTrigger, type GithubComment } from './github-trigger.ts'
 /** A notification of the agent account; `subject.url` is the API address of its Issue or PR. */
 const NotificationSchema = z.looseObject({
   repository: z.looseObject({ full_name: z.string() }), subject: z.looseObject({ url: z.string().nullish() }),
+  updated_at: z.string().nullish(),
 })
+/**
+ * How far a notification's `updated_at` may trail the comment it reports. GitHub stamps a notification a few seconds to
+ * a few minutes after the comment, so a thread read from the poll cursor alone can start after the comment it announces.
+ */
+const NOTIFICATION_LAG_MS = 5 * 60_000
 
 const GithubConfigSchema = GithubAccountsSchema.extend({ pollSeconds: z.number().int().min(60).max(3600).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
@@ -320,7 +326,13 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
     const address = githubAddress(notification.subject.url ?? '', repository)
     if (!address || address.discussion || items.has(address.number)) continue
     const { number, pr } = address
-    items.set(number, { since: [state.get(KV.github.cursor(number)) ?? since, since].sort().at(-1)!, pr })
+    // A thread read for the first time starts from the notification, not from the poll cursor: GitHub reports a comment
+    // after it is written, so the cursor has often moved past that comment by the time its notification is fetched, and
+    // the mention would be skipped for good. Trigger IDs deduplicate whatever the wider window reads twice.
+    const notified = Date.parse(notification.updated_at ?? '')
+    const floor = Number.isFinite(notified) ? new Date(notified - NOTIFICATION_LAG_MS).toISOString() : since
+    const known = state.get(KV.github.cursor(number))
+    items.set(number, { since: known ? [known, since].sort().at(-1)! : [since, floor].sort()[0]!, pr })
   }
   for (const [number, item] of items) {
     if (stopped(ctx, round)) return { count: notifications.length, interval }

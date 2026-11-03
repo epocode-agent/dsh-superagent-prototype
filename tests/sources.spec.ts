@@ -863,6 +863,24 @@ describe('github source', () => {
     expect(reads.filter(path => path.includes('/comments'))).toEqual([`issues/12/comments?per_page=100&since=${since}`])
     h.store.close()
   })
+  it('reads a comment the cursor passed before GitHub reported its mention', async () => {
+    const h = host()
+    const since = '2026-09-08T00:00:00.000Z'
+    h.store.set('github-since', since)
+    // The mention is older than the cursor, but GitHub reported it 20 seconds after it was written.
+    const url = 'https://github.com/acme/widgets/issues/12'
+    const comment: GithubComment = { id: 6, body: '@agent-bot can you take this?', user: { login: 'alice', type: 'User' },
+      html_url: `${url}#issuecomment-6`, created_at: '2026-09-07T23:59:00Z', updated_at: '2026-09-07T23:59:00Z' }
+    github(h, {
+      notifications: [{ id: 'n12', updated_at: '2026-09-08T00:00:20Z', reason: 'mention', repository: { full_name: 'acme/widgets' },
+        subject: { url: 'https://api.github.com/repos/acme/widgets/issues/12', type: 'Issue', title: 'Login fails' } }],
+      'issues/12': issue(12, { created_at: '2026-08-01T00:00:00Z' }),
+      'issues/12/comments': [comment],
+    })
+    await pollRound(h)
+    expect(h.receive.mock.calls.map(([trigger]) => trigger)).toEqual([commentTrigger(comment, { number: 12, isPr: false, url }, 'conversation', 'agent-bot')])
+    h.store.close()
+  })
   it('keeps one body Trigger for an Issue that a later poll reads again', async () => {
     const h = host()
     // Opened just before the poll, the Issue is still after the cursor the next poll reads from.
